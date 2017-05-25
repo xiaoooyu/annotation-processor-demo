@@ -1,6 +1,7 @@
 package com.xiaoooyu.annotationprocessor.processor;
 
 import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.CodeBlock;
 import com.squareup.javapoet.JavaFile;
 import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.TypeName;
@@ -30,7 +31,7 @@ public class BindingSet {
     protected TypeElement mEnclosingElement;
 
     // mapping from Id to executable method
-    protected Map<Integer, TraceMethod> mIdToTraceMethod;
+    protected Map<Id, TraceMethod> mIdToTraceMethod;
 
     protected ClassName mBindingClassName;
     protected ClassName mTargetClassName;
@@ -54,10 +55,9 @@ public class BindingSet {
      * @param traceInfo
      * @return ture if success
      */
-    public boolean addBinding(int id, ExecutableElement bindingElement, TraceClick traceInfo) {
-        Integer key = new Integer(id);
-        if (!mIdToTraceMethod.containsKey(key)) {
-            mIdToTraceMethod.put(key, new TraceMethod(traceInfo, bindingElement));
+    public boolean addBinding(Id id, ExecutableElement bindingElement, TraceClick traceInfo) {
+        if (!mIdToTraceMethod.containsKey(id)) {
+            mIdToTraceMethod.put(id, new TraceMethod(traceInfo, bindingElement));
             return true;
         }
         return false;
@@ -89,22 +89,50 @@ public class BindingSet {
         result.addField(targetTypeVariableName, "mTarget", PRIVATE);
         result.addField(VIEW, "mView", PRIVATE);
 
-        result.addMethod(createContructor(targetTypeVariableName));
+        result.addMethod(createConstructor(targetTypeVariableName));
 
         return result.build();
     }
 
-    private MethodSpec createContructor(TypeName targetType) {
+    private MethodSpec createConstructor(TypeName targetType) {
         MethodSpec.Builder constructor = MethodSpec.constructorBuilder()
             .addAnnotation(UI_THREAD)
             .addModifiers(PUBLIC);
 
-        constructor.addParameter(targetType, "target");
-        constructor.addParameter(VIEW, "source");
+        ClassName clickListener = ClassName.get("butterknife.internal", "DebouncingOnClickListener");
 
+        constructor.addParameter(targetType, "target");
+        constructor.addParameter(VIEW, "view");
         constructor.addStatement("mTarget = target");
-        constructor.addStatement("mView = source");
+
+        for (Map.Entry<Id, TraceMethod> entry : mIdToTraceMethod.entrySet()) {
+            Id id = entry.getKey();
+            TraceMethod method = entry.getValue();
+            constructor.addCode("view.findViewById($L).setOnClickListener(new $T() {\n" +
+                "      @Override\n" +
+                "      public void doClick(View p0) {\n", CodeBlock.of("$L", id.code), clickListener);
+//            addTraceInfoStatement(constructor, method.mTraceInfo);
+
+            String invokeMethod;
+            if (method.mExecutableElement.getParameters().size() > 0) {
+                invokeMethod = "\tmTarget.$L(p0);\n";
+            } else {
+                invokeMethod = "\tmTarget.$L();\n";
+            }
+
+            constructor.addStatement(invokeMethod +
+                "      }})", method.mExecutableElement.getSimpleName());
+        }
 
         return constructor.build();
+    }
+
+    private void addTraceInfoStatement(MethodSpec.Builder builder, TraceClick traceInfo) {
+        ClassName analyticsUtil = ClassName.get("com.teambition.teambition.util", "AnalyticsUtil");
+        ClassName r = ClassName.get("com.teambition.teambition", "R");
+
+        builder.addStatement("$1T.EventBuilder builder = $1T.make()", analyticsUtil)
+            .addStatement("builder.putProps($T.string.a_eprop_page, $L)", r, traceInfo.page())
+            .addStatement("builder.trackEvent($L)", traceInfo.event());
     }
 }
